@@ -1,0 +1,186 @@
+---
+title: Error Correction Models
+subtitle: Investigating the Dynamic Relationship Between Minimum Wage Rates and Housing Prices in Atlanta, GA
+author: "Abigail Morgan"
+date: "`r format(Sys.Date(),'%B %d, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    fig_caption: yes
+    theme: spacelab
+    toc: yes
+    toc_depth: 4
+    toc_float: no
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include = FALSE}
+rm(list=ls())
+graphics.off()
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r loadPackages, message=FALSE}
+require(fpp3)
+require(tidyverse)
+require(dplyr)
+require(tidyquant)
+require(timetk)
+require(vars)
+require(lmtest)
+require(kableExtra)
+require(stargazer)
+require(tsDyn)
+```
+## Abstract
+Vector error correction models are a useful method of exploring the dynamic relationship between variables in a time-series.  In this paper, I examine the relationship between the minimum hourly wage rate in the state of Georgia and the S&P/Case-Shiller Home Price Index for Atlanta, Georgia.  Using tests for unit roots and cointegration (measures of whether the variables are stationary over time and if they are correlated across time), I determine the best fitting error correction model to observe the relationship between my variables.  The vector error correction model (VECM) shows that [conclusion findings]
+
+## Introduction
+When it comes to forecasting future values of metrics like housing prices, it can be helpful to utilize other variables that prices may respond to, such as the minimum wage, to make predictions.  If one suspects that changes in wages are a good mechanism for predicting housing prices, the methodology to test this hypothesis is to utilize error correction models. These models can be used to show how the value of a variable in a previous period can predict future values of a cointegrated variable.  Specifically, it shows how well the variables "correct" themselves following deviations from equilibrium.
+
+## Data
+The data I am utilizing is pulled from the Federal Reserve Economic Database, from January 1, 1991 to January 1, 2019.  The following table describes the two variables I chose to study as well as their relevant units.
+```{r loadData}
+# Create a vector containing my variables of interest from FRED
+vars <- c("STTMINWGGAM", "ATXRNSA")
+
+# Load data from FRED and perform relevant transformations 
+data <- tq_get(vars, get = "economic.data", from = "1991-01-01", to = "2019-01-01") %>%
+  mutate(Month = yearmonth(date), value = price) %>% 
+  dplyr::select(-date, -value) %>%
+  as_tsibble(index = Month, key = symbol)
+
+# Pivot my tsibble so that it is organized by each variable.  This just makes the data a little bit easier to look at and compare across my two variables.
+ dataw <- data %>%
+   pivot_wider(names_from = symbol, values_from = price) %>%
+  as_tsibble()
+ 
+ts_Wage <- dataw %>% as.ts(STTMINWGGAM)
+   
+ts_HousingPrice <- dataw %>% as.ts(ATXRNSA)
+
+  # Variable name, description, and units vectors (where names have already been defined in my vars vector)
+description <- c("S&P/Case-Shiller GA-Atlanta Home Price Index", "State Minimum Wage Rate for Georgia")
+units <- c("Index Jan 2000=100, Not Seasonally Adjusted", "Dollars per Hour, Not Seasonally Adjusted")
+
+# Create a table using kable to display my two variables of interest and their respective definitions/meanings.
+table <- data.frame(vars, description, units)
+kbl(table, col.names = c("Variable", "Description", "Units"), align = "lll") %>%
+  kable_styling(bootstrap_options = c("bordered", "hover"))
+```
+I chose the home price index because I thought would be interesting to explore how housing prices may have changed over time in relation to the minimum wage.  The units of this index are in relationship to January 2000, where the baseline for the index is 100.  This means that if the index is 200 in a given period, then housing prices are said to be twice as much as they were in the period of January 2000.  Minimum wage is measured in dollars per hour, and will typically remain stationary for a long period of time until legislation is passed to raise the minimum (therefore, the data looks like a step-wise function when plotted).  I suspected that these variables might have a dynamic relationship because minimum-wage legislation may be influenced by the cost of living, which is reflected in the housing price index. 
+
+
+## Model Selection
+Before I can estimate my error correction model, there are a few key characteristics of my two time series variable that I need to test for.  The VAR model works well when one or both of my models are stationary.  What this means is they have a constant mean, variance, and autocorrelation structure over time.  If one of my variables is non-stationary, I can transform it to a stationary state using a process called differencing. In the case that my variables are both non-stationary, I may consider using a different model.  
+
+
+#### Testing for Unit Roots
+The following table displays each of my variables and their respective unit roots.  Both variables appear to have a unit root present, indicating that they are non-stationary.  Because of this, I will move on to the next step in my model selection process, rather than proceed with the VAR model.
+```{r models}
+# Before I can use my error correction models, I need to check if my variables are stationary (do they have a unit-root?) Using the Augmented Dickey Fuller Test (ADF).
+data %>% 
+  features(price, unitroot_ndiffs) %>% 
+  kable(format = "html", table.attr = "style='width:30%;' ") %>% 
+  kableExtra::kable_styling()
+
+ur.Wage <- ur.df(ts_Wage, type = "drift", selectlags = "BIC")
+#summary(ur.Wage)
+
+ur.HousingPrice <- ur.df(ts_HousingPrice, type = "drift", selectlags = "BIC")
+#summary(ur.HousingPrice)
+
+# Now that I can see that the two variables are non-stationary (there is a unit-root present), I will again use the ADF test to determine if my variables are cointegrated.
+coint.out <- lm(ts_Wage ~ ts_HousingPrice)
+coint.resids <- coint.out$residuals
+ur.resids <- ur.df(coint.resids, type = "drift", selectlags = "BIC")
+#summary(ur.resids)
+```
+
+#### Testing for Cointegration
+The next important step in the model selection is to test my two non-stationary time-series variables for cointegration.  This will tell me if the two variables are correlated in the long term.  I used an Augmented Dickey-Fuller (ADF) test for this.  The ADF test performs a hypothesis test where the null hypothesis states that there is a unit root present and the alternative hypothesis implies that there is no unit root present.  The goal is to reject the null hypothesis, as this result would indicate that the two variables are indeed cointegrated.  The following table shows the relevant output from the test.
+```{r kable}
+#YES THEY ARE COINTEGRATED.  I don't want to include the summary output of my ADF test because it takes up a lot of space and an ordinary person wouldn't be able to read it, so I'm gonna pop the relevant information that I'd like to discuss into a Kable.
+coef <- c("Intercept", "z.lag.1", "z.diff.lag")
+est <- c("0.004226", "-0.029099", "0.101021")
+se <- c("0.008672", "0.014719", "0.079441")
+tstat <- c("0.487", "-1.977", "1.272")
+pvalue <- c("0.6263", "0.0489*", "0.2044")
+dftable <- data.frame(coef, est, se, tstat, pvalue)
+kbl(dftable, col.names = c("Coefficient", "Estimate", "Standard Error", "t statistic", "p-value"), align = "lll") %>%
+  kable_styling(bootstrap_options = c("bordered", "hover"))
+```
+The coefficient of interest here is "z.lag.1" in the second row of the table.  The p-value for this coefficient is less than 0.05, indicating statistical significance.  The null is rejected, and the two variables are found to be cointegrated.  Based on these results, I will be proceeding with the Vector Error Correction Model (VECM).
+
+
+## The Vector Error Correction Model
+You may have heard the story of the drunk and her dog, which is commonly used to explain the intuition behind VECM. In this example, there is a drunk (non-stationary variable) who goes on a random walk from the bar to their home, followed by a puppy (non-stationary) who also follows a random walk.  However, whenever the puppy and the drunk stray too far apart, they will course correct themselves so that they are again at "equilibrium" on the path home (ie. the two variables are cointegrated).  This process will repeat itself, with the puppy wandering far from the drunk before realizing how far it is and finding its way back to where the drunk is.
+
+This same intuition is applied in a VECM model.  Two non-stationary variables that are cointegrated will correct to each other over time. In the case of my two variables of interest, I use the following table to determine which of my variables is the drunk (leader), and which is the puppy (follower/course corrector).
+```{r VECM}
+#Time to pop my variables into the VECM function
+z.WH <- cbind(ts_Wage, ts_HousingPrice)
+p.vecm <- as.integer(VARselect(z.WH,lag.max=12,type="const")$selection[2]) # -1
+vecm.WH <- VECM(z.WH,p.vecm,r=1,include="const",estim="ML",LRinclude="none")
+#summary(vecm.WH)
+
+# Making another kable to display my VECM model results in an easier to read format
+var <- c("Minimum Wage", "Housing Price Index")
+ect <- c("-0.0363(0.0125)**", "-0.0050(0.0470)")
+int <- c("-0.0204(0.0143)", "0.0680(0.0541)")
+dftable <- data.frame(var, ect, int)
+kbl(dftable, col.names = c("Variable", "Error Correction Term", "Intercept"), align = "lll") %>%
+  kable_styling(bootstrap_options = c("bordered", "hover"))
+```
+From the error correction terms (ECT) in my output, it can be concluded that the ECT of minimum wage is statistically significant, while the ECT on the housing price index (HPI) is not.  This implies that the minimum wage will correct to the HPI's random walk.  
+
+#### Impulse Response Function
+The following graphs illustrate the impulse response functions (IRF) of my two variables of interest.  
+
+The first graph illustrates a shock to wages and as expected, HPI doesn't correct to the shock.  The second graph gives more surprising results, in that wages don't appear to adjust to a shock in HPI.  This is contrary to the previous expectation that wages would correct to HPI over time.
+
+```{r IRF}
+irf.WH <- irf(vecm.WH, n.ahead = 50)
+plot(irf.WH)
+```
+
+#### Forecast Error Variance Decomposition
+The forecast error variance decomposition (FEVD) indicates how well shocks to a variable can explain the forecast error variance of another variable.  This can be helpful in determining how reliably the variables will correct to eachother in your VECM model. 
+
+As was the case with the IRF for minimum wage and HPI, the FEVD showed that neither variable appeared to have an impact on the variance in the path of the other.  The variance in HPI appeared to be completely independent of the variance of the path of minimum wage, while over time the variance in minimum wage appeared to play a small role in the error variance of HPI.
+```{r FEVD}
+plot(fevd(vecm.WH, n.ahead = 30))
+```
+
+After observing the IRF and FEVD, I made a final effort to find some dynamic relationship between my two variables by examining the error correction path of the Minimum Wage.  The below graph shows relatively unpredictable deviations in the distance of the minimum wage from the HPI. Corrections to the mean appear to occur in sudden shocks, while deviations appear to happen more slowly over time.
+```{r ECT}
+cointvector <- vecm.WH$model.specific$beta
+ECT <- z.WH %*% cointvector
+plot(ECT, type = "l", ylab="ECT", xlab = "Number of steps", main = "Error correction path of the Minimum Wage", sub = "The blue horizontal line is the mean distance of the Minimum Wage from the HPI")
+abline(h=mean(ECT),col="blue")
+```
+
+
+## Conclusion
+While it isn't the exciting dynamic relationship I hoped to discover, there is some evidence to suggest a correlation between minimum wage and the housing price index in Atlanta, Ga over time.  Based on my findings, wage may not be a suitable predictor for HPI, as it doesn't appear to respond as I hoped to shocks in HPI.  This is not an entirely surprising outcome, as minimum wage does not change frequently, meaning there is little variation in the data that I used.  This could explain why my results were not consistent with my expectations, and perhaps with a different set of wage data (average or median wages by region, for example) I would've found more useful results.
+
+## Resources
+Georgia Minimum Wage Data: 
+https://fred.stlouisfed.org/series/STTMINWGGAM
+
+Atlanta Housing Price Index: 
+https://fred.stlouisfed.org/series/ATXRNSA
+
+My Github Page: https://abigailtmorgan.github.io/
+
+
+```{r finalthoughts}
+# Maybe the drunk and the puppy didn't follow each other home.  Maybe the puppy didn't even belong to the drunk in the first place.  Or maybe the puppy was the friends we made along the way.  
+#fin
+```
